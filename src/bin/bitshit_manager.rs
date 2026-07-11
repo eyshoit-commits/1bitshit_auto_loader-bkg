@@ -25,7 +25,7 @@ impl std::fmt::Display for MenuAction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self {
             Self::Status => "Status der Komponenten anzeigen",
-            Self::SetInstallPath => "Installationspfad waehlen",
+            Self::SetInstallPath => "Installationsart / Pfad waehlen",
             Self::InstallUpdate => "Komponenten installieren / aktualisieren",
             Self::SetupWizard => "Installationsassistent starten",
             Self::BuildRelease => "Gesamten Stack bauen (Release)",
@@ -33,6 +33,26 @@ impl std::fmt::Display for MenuAction {
             Self::StartCli => "BitShit CLI starten",
             Self::Clean => "Build-Artefakte bereinigen",
             Self::Quit => "Beenden",
+        };
+        write!(f, "{label}")
+    }
+}
+
+#[derive(Clone, Copy)]
+enum InstallScope {
+    Global,
+    User,
+    Project,
+    Custom,
+}
+
+impl std::fmt::Display for InstallScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::Global => "Global fuer alle Benutzer",
+            Self::User => "Nur fuer aktuellen Benutzer",
+            Self::Project => "Im Projektordner",
+            Self::Custom => "Benutzerdefinierter Ordner",
         };
         write!(f, "{label}")
     }
@@ -58,10 +78,34 @@ fn install_path_config(repo_root: &Path) -> PathBuf {
 
 fn resolve_install_path(repo_root: &Path, value: &str) -> PathBuf {
     let path = PathBuf::from(value.trim());
-    if path.is_absolute() {
-        path
+    if path.is_absolute() { path } else { repo_root.join(path) }
+}
+
+fn user_install_path() -> PathBuf {
+    if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("BitShit")
     } else {
-        repo_root.join(path)
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".local")
+            .join("share")
+            .join("bitshit")
+    }
+}
+
+fn global_install_path() -> PathBuf {
+    if cfg!(windows) {
+        std::env::var_os("PROGRAMDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+            .join("BitShit")
+    } else {
+        PathBuf::from("/opt/bitshit")
     }
 }
 
@@ -69,32 +113,65 @@ fn load_install_path(repo_root: &Path) -> PathBuf {
     if let Some(value) = std::env::var_os("BITSHIT_INSTALL_ROOT") {
         return resolve_install_path(repo_root, &value.to_string_lossy());
     }
-
-    let config = install_path_config(repo_root);
-    if let Ok(value) = std::fs::read_to_string(config) {
+    if let Ok(value) = std::fs::read_to_string(install_path_config(repo_root)) {
         let value = value.trim();
         if !value.is_empty() {
             return resolve_install_path(repo_root, value);
         }
     }
-
     repo_root.join("components")
 }
 
 fn save_install_path(repo_root: &Path, install_root: &Path) -> Result<()> {
-    std::fs::write(install_path_config(repo_root), install_root.to_string_lossy().as_bytes())?;
+    std::fs::write(
+        install_path_config(repo_root),
+        install_root.to_string_lossy().as_bytes(),
+    )?;
     Ok(())
 }
 
 fn choose_install_path(repo_root: &Path, current: &Path) -> Result<PathBuf> {
-    let entered = Text::new("Installationspfad:")
-        .with_default(&current.to_string_lossy())
-        .with_help_message("Absoluter Pfad oder relativ zum Auto-Loader-Verzeichnis")
-        .prompt()?;
+    let scope = Select::new(
+        "Installationsart waehlen:",
+        vec![
+            InstallScope::User,
+            InstallScope::Project,
+            InstallScope::Global,
+            InstallScope::Custom,
+        ],
+    )
+    .with_help_message("Global kann Administrator- oder Root-Rechte benoetigen")
+    .prompt()?;
 
-    let selected = resolve_install_path(repo_root, &entered);
-    std::fs::create_dir_all(&selected)
-        .with_context(|| format!("Installationspfad konnte nicht erstellt werden: {}", selected.display()))?;
+    let selected = match scope {
+        InstallScope::User => user_install_path(),
+        InstallScope::Project => repo_root.join("components"),
+        InstallScope::Global => {
+            let target = global_install_path();
+            println!("[Manager] Globales Installationsziel: {}", target.display());
+            if !Confirm::new("Global installieren? Administrator- oder Root-Rechte koennen erforderlich sein.")
+                .with_default(false)
+                .prompt()?
+            {
+                return Ok(current.to_path_buf());
+            }
+            target
+        }
+        InstallScope::Custom => {
+            let entered = Text::new("Benutzerdefinierter Installationspfad:")
+                .with_default(&current.to_string_lossy())
+                .with_help_message("Absoluter Pfad oder relativ zum Auto-Loader-Verzeichnis")
+                .prompt()?;
+            resolve_install_path(repo_root, &entered)
+        }
+    };
+
+    std::fs::create_dir_all(&selected).with_context(|| {
+        format!(
+            "Installationspfad konnte nicht erstellt werden: {}. Bei globaler Installation den Manager mit Administrator- oder Root-Rechten starten.",
+            selected.display()
+        )
+    })?;
     save_install_path(repo_root, &selected)?;
     println!("[Manager] Installationspfad gespeichert: {}", selected.display());
     Ok(selected)
@@ -106,13 +183,17 @@ fn shared_target(install_root: &Path) -> PathBuf {
 
 fn ensure_disk_space(install_root: &Path) -> Result<()> {
     std::fs::create_dir_all(install_root)?;
-    let free = fs2::available_space(install_root)
-        .with_context(|| format!("Freier Speicher konnte fuer {} nicht ermittelt werden", install_root.display()))?;
+    let free = fs2::available_space(install_root).with_context(|| {
+        format!(
+            "Freier Speicher konnte fuer {} nicht ermittelt werden",
+            install_root.display()
+        )
+    })?;
     let free_gib = free as f64 / 1024.0 / 1024.0 / 1024.0;
     println!("[Manager] Freier Speicher am Installationsziel: {free_gib:.2} GiB");
     if free < MIN_FREE_GIB * 1024 * 1024 * 1024 {
         return Err(anyhow!(
-            "Zu wenig Speicher: {free_gib:.2} GiB frei. Fuer den kompletten Rust/LLVM/Wasmtime-Build werden mindestens {MIN_FREE_GIB} GiB verlangt. Waehle einen anderen Installationspfad oder bereinige Build-Artefakte."
+            "Zu wenig Speicher: {free_gib:.2} GiB frei. Mindestens {MIN_FREE_GIB} GiB werden verlangt. Waehle ein anderes Installationsziel oder bereinige Build-Artefakte."
         ));
     }
     Ok(())
@@ -147,7 +228,12 @@ fn component_status(registry: &ComponentRegistry) {
         } else {
             "-".to_string()
         };
-        println!("| {:<10} | {:<14} | {:<8} |", name, if installed { "installiert" } else { "fehlt" }, revision);
+        println!(
+            "| {:<10} | {:<14} | {:<8} |",
+            name,
+            if installed { "installiert" } else { "fehlt" },
+            revision
+        );
     }
     println!("+------------+----------------+----------+");
     if let Ok(free) = fs2::available_space(&registry.install_root) {
@@ -159,7 +245,6 @@ fn component_status(registry: &ComponentRegistry) {
 fn build_stack(registry: &ComponentRegistry, release: bool) -> Result<()> {
     ensure_disk_space(&registry.install_root)?;
     std::fs::create_dir_all(shared_target(&registry.install_root))?;
-
     for name in ORDER {
         let dir = registry.component_dir(name);
         if !dir.join("Cargo.toml").is_file() {
@@ -167,12 +252,13 @@ fn build_stack(registry: &ComponentRegistry, release: bool) -> Result<()> {
         }
         let mut command = Command::new("cargo");
         command.arg("build");
-        if release {
-            command.arg("--release");
-        }
+        if release { command.arg("--release"); }
         configure_cargo(&mut command, &registry.install_root);
         command.current_dir(&dir);
-        run_checked(&mut command, &format!("Baue {name} ({})", if release { "Release" } else { "Debug" }))?;
+        run_checked(
+            &mut command,
+            &format!("Baue {name} ({})", if release { "Release" } else { "Debug" }),
+        )?;
     }
     println!("\n[Manager] Stack erfolgreich gebaut.");
     Ok(())
@@ -210,9 +296,7 @@ fn terminal_setup_wizard(
         .prompt()?
     {
         let dirs = runtime.block_on(registry.ensure_all())?;
-        for dir in dirs {
-            println!("[OK] {}", dir.display());
-        }
+        for dir in dirs { println!("[OK] {}", dir.display()); }
     }
 
     let build = Select::new("Build-Profil:", vec!["Release", "Debug", "Nicht bauen"]).prompt()?;
@@ -228,7 +312,6 @@ fn terminal_setup_wizard(
     {
         start_cli(&registry)?;
     }
-
     Ok(install_root)
 }
 
@@ -239,13 +322,11 @@ fn clean_stack(registry: &ComponentRegistry) -> Result<()> {
     {
         return Ok(());
     }
-
     let target = shared_target(&registry.install_root);
     if target.exists() {
         println!("[Manager] Entferne {}", target.display());
         std::fs::remove_dir_all(&target)?;
     }
-
     for name in ORDER {
         let target = registry.component_dir(name).join("target");
         if target.exists() {
@@ -273,7 +354,6 @@ fn main() -> Result<()> {
     loop {
         let registry = ComponentRegistry::load(&manifest_path, install_root.clone())?;
         println!("\nInstallationspfad: {}", install_root.display());
-
         let action = Select::new(
             "Aktion auswaehlen:",
             vec![
@@ -293,10 +373,7 @@ fn main() -> Result<()> {
         .unwrap_or(MenuAction::Quit);
 
         let result = match action {
-            MenuAction::Status => {
-                component_status(&registry);
-                Ok(())
-            }
+            MenuAction::Status => { component_status(&registry); Ok(()) }
             MenuAction::SetInstallPath => {
                 install_root = choose_install_path(&repo_root, &install_root)?;
                 Ok(())
@@ -305,9 +382,7 @@ fn main() -> Result<()> {
                 ensure_disk_space(&registry.install_root)?;
                 let dirs = registry.ensure_all().await?;
                 println!("\n[Manager] Komponenten bereit:");
-                for dir in dirs {
-                    println!("  {}", dir.display());
-                }
+                for dir in dirs { println!("  {}", dir.display()); }
                 Ok(())
             }),
             MenuAction::SetupWizard => {
