@@ -1,30 +1,38 @@
 {
   "name": "bitshit-package-manager",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "id": "https://raw.githubusercontent.com/eyshoit-commits/1bitshit_auto_loader-bkg/main/package.json",
-  "last_updated": "2026-07-11T14:59:00Z",
+  "last_updated": "2026-07-11T18:30:00Z",
   "author": "BitShit",
   "repository": "https://github.com/eyshoit-commits/1bitshit_auto_loader-bkg",
   "components": {
-    "cli": {
-      "version": "main",
-      "min_supported": null,
-      "manifest_url": "https://github.com/eyshoit-commits/1bitshit_cli-bkg"
-    },
-    "engine": {
-      "version": "main",
-      "min_supported": null,
-      "manifest_url": "https://github.com/eyshoit-commits/1bitshit_engine-bkg"
-    },
     "kernel": {
+      "name": "kernel",
+      "repo": "https://github.com/eyshoit-commits/1bitshit_kernel-bkg.git",
       "version": "main",
       "min_supported": null,
       "manifest_url": "https://github.com/eyshoit-commits/1bitshit_kernel-bkg"
     },
     "drivers": {
+      "name": "drivers",
+      "repo": "https://github.com/eyshoit-commits/1bitshit_driver-bkg.git",
       "version": "main",
       "min_supported": null,
       "manifest_url": "https://github.com/eyshoit-commits/1bitshit_driver-bkg"
+    },
+    "engine": {
+      "name": "engine",
+      "repo": "https://github.com/eyshoit-commits/1bitshit_engine-bkg.git",
+      "version": "main",
+      "min_supported": null,
+      "manifest_url": "https://github.com/eyshoit-commits/1bitshit_engine-bkg"
+    },
+    "cli": {
+      "name": "cli",
+      "repo": "https://github.com/eyshoit-commits/1bitshit_cli-bkg.git",
+      "version": "main",
+      "min_supported": null,
+      "manifest_url": "https://github.com/eyshoit-commits/1bitshit_cli-bkg"
     }
   },
   "web": {
