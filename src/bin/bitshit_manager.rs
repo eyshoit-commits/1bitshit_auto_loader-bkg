@@ -10,6 +10,7 @@ const ORDER: [&str; 4] = ["kernel", "drivers", "engine", "cli"];
 enum MenuAction {
     Status,
     InstallUpdate,
+    SetupWizard,
     BuildRelease,
     BuildDebug,
     StartCli,
@@ -23,6 +24,7 @@ impl std::fmt::Display for MenuAction {
         let label = match self {
             Self::Status => "Status der Komponenten anzeigen",
             Self::InstallUpdate => "Komponenten installieren / aktualisieren",
+            Self::SetupWizard => "Installationsassistent im Terminal",
             Self::BuildRelease => "Gesamten Stack bauen (Release)",
             Self::BuildDebug => "Gesamten Stack bauen (Debug)",
             Self::StartCli => "BitShit CLI starten",
@@ -32,6 +34,12 @@ impl std::fmt::Display for MenuAction {
         };
         write!(f, "{label}")
     }
+}
+
+fn graphical_session_available() -> bool {
+    std::env::var_os("DISPLAY").is_some()
+        || std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var_os("WAYLAND_SOCKET").is_some()
 }
 
 fn run_checked(command: &mut Command, label: &str) -> Result<()> {
@@ -65,7 +73,12 @@ fn component_status(registry: &ComponentRegistry) {
         } else {
             "-".to_string()
         };
-        println!("{:<10} {:<14} {}", name, if installed { "installiert" } else { "fehlt" }, revision);
+        println!(
+            "{:<10} {:<14} {}",
+            name,
+            if installed { "installiert" } else { "fehlt" },
+            revision
+        );
     }
     println!("────────────────────────────────────────────");
 }
@@ -74,13 +87,20 @@ fn build_stack(registry: &ComponentRegistry, release: bool) -> Result<()> {
     for name in ORDER {
         let dir = registry.component_dir(name);
         if !dir.join("Cargo.toml").is_file() {
-            return Err(anyhow!("Komponente '{name}' fehlt. Zuerst installieren oder aktualisieren."));
+            return Err(anyhow!(
+                "Komponente '{name}' fehlt. Zuerst installieren oder aktualisieren."
+            ));
         }
         let mut command = Command::new("cargo");
         command.arg("build");
-        if release { command.arg("--release"); }
+        if release {
+            command.arg("--release");
+        }
         command.current_dir(&dir);
-        run_checked(&mut command, &format!("Baue {name} ({})", if release { "Release" } else { "Debug" }))?;
+        run_checked(
+            &mut command,
+            &format!("Baue {name} ({})", if release { "Release" } else { "Debug" }),
+        )?;
     }
     println!("\n[Manager] Stack erfolgreich gebaut.");
     Ok(())
@@ -98,14 +118,63 @@ fn start_cli(registry: &ComponentRegistry) -> Result<()> {
 }
 
 fn open_gui(repo_root: &Path) -> Result<()> {
+    if !graphical_session_available() {
+        return Err(anyhow!(
+            "Keine grafische Sitzung erkannt. DISPLAY/WAYLAND_DISPLAY fehlt. Verwende den Terminal-Installationsassistenten."
+        ));
+    }
     let mut command = Command::new("cargo");
     command.args(["run", "--release", "--bin", "bitshit-installer"]);
     command.current_dir(repo_root);
     run_checked(&mut command, "Starte grafischen Installer")
 }
 
+fn terminal_setup_wizard(
+    registry: &ComponentRegistry,
+    runtime: &tokio::runtime::Runtime,
+) -> Result<()> {
+    println!("\nBitShit Installationsassistent (Terminal)");
+    println!("────────────────────────────────────────────");
+
+    if Confirm::new("Komponenten jetzt installieren oder aktualisieren?")
+        .with_default(true)
+        .prompt()?
+    {
+        let dirs = runtime.block_on(registry.ensure_all())?;
+        println!("\n[Manager] Komponenten bereit:");
+        for dir in dirs {
+            println!("  {}", dir.display());
+        }
+    }
+
+    let build = Select::new(
+        "Build-Profil auswählen:",
+        vec!["Release", "Debug", "Nicht bauen"],
+    )
+    .prompt()?;
+
+    match build {
+        "Release" => build_stack(registry, true)?,
+        "Debug" => build_stack(registry, false)?,
+        _ => {}
+    }
+
+    if Confirm::new("BitShit CLI anschließend starten?")
+        .with_default(false)
+        .prompt()?
+    {
+        start_cli(registry)?;
+    }
+
+    println!("\n[Manager] Installationsassistent abgeschlossen.");
+    Ok(())
+}
+
 fn clean_stack(registry: &ComponentRegistry) -> Result<()> {
-    if !Confirm::new("Wirklich alle Cargo-Build-Artefakte löschen?").with_default(false).prompt()? {
+    if !Confirm::new("Wirklich alle Cargo-Build-Artefakte löschen?")
+        .with_default(false)
+        .prompt()?
+    {
         return Ok(());
     }
     for name in ORDER {
@@ -122,37 +191,57 @@ fn clean_stack(registry: &ComponentRegistry) -> Result<()> {
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let registry = ComponentRegistry::load(&repo_root.join("package.json"), repo_root.join("components"))?;
+    let registry = ComponentRegistry::load(
+        &repo_root.join("package.json"),
+        repo_root.join("components"),
+    )?;
     let runtime = tokio::runtime::Runtime::new()?;
 
     println!("\n╔══════════════════════════════════════════════╗");
     println!("║          BitShit Component Manager           ║");
     println!("╚══════════════════════════════════════════════╝");
-    println!("Version {} · {} Komponenten", registry.manifest.version, registry.manifest.components.len());
+    println!(
+        "Version {} · {} Komponenten",
+        registry.manifest.version,
+        registry.manifest.components.len()
+    );
+    if !graphical_session_available() {
+        println!("Modus: Headless-Server · Terminal-Assistent aktiv");
+    }
 
     loop {
-        let action = Select::new("Aktion auswählen:", vec![
+        let mut actions = vec![
             MenuAction::Status,
             MenuAction::InstallUpdate,
+            MenuAction::SetupWizard,
             MenuAction::BuildRelease,
             MenuAction::BuildDebug,
             MenuAction::StartCli,
-            MenuAction::OpenGui,
-            MenuAction::Clean,
-            MenuAction::Quit,
-        ])
-        .with_help_message("Pfeiltasten bewegen · Enter auswählen · Esc beendet")
-        .prompt()
-        .unwrap_or(MenuAction::Quit);
+        ];
+        if graphical_session_available() {
+            actions.push(MenuAction::OpenGui);
+        }
+        actions.extend([MenuAction::Clean, MenuAction::Quit]);
+
+        let action = Select::new("Aktion auswählen:", actions)
+            .with_help_message("Pfeiltasten bewegen · Enter auswählen · Esc beendet")
+            .prompt()
+            .unwrap_or(MenuAction::Quit);
 
         let result = match action {
-            MenuAction::Status => { component_status(&registry); Ok(()) }
+            MenuAction::Status => {
+                component_status(&registry);
+                Ok(())
+            }
             MenuAction::InstallUpdate => runtime.block_on(async {
                 let dirs = registry.ensure_all().await?;
                 println!("\n[Manager] Komponenten bereit:");
-                for dir in dirs { println!("  {}", dir.display()); }
+                for dir in dirs {
+                    println!("  {}", dir.display());
+                }
                 Ok(())
             }),
+            MenuAction::SetupWizard => terminal_setup_wizard(&registry, &runtime),
             MenuAction::BuildRelease => build_stack(&registry, true),
             MenuAction::BuildDebug => build_stack(&registry, false),
             MenuAction::StartCli => start_cli(&registry),
@@ -160,7 +249,9 @@ fn main() -> Result<()> {
             MenuAction::Clean => clean_stack(&registry),
             MenuAction::Quit => break,
         };
-        if let Err(error) = result { eprintln!("\n[Manager] FEHLER: {error:#}"); }
+        if let Err(error) = result {
+            eprintln!("\n[Manager] FEHLER: {error:#}");
+        }
     }
 
     println!("[Manager] Beendet.");
