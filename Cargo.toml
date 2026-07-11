@@ -1,6 +1,6 @@
 [package]
 name = "bitshit-auto-loader"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 authors = ["BitShit"]
 description = "GUI and CLI manager for the modular BitShit stack."
@@ -8,7 +8,7 @@ license = "MIT"
 
 [[bin]]
 name = "bitshit-auto-loader"
-path = "src/bin/bitshit_manager.rs"
+path = "src/bin/auto_loader.rs"
 
 [[bin]]
 name = "bitshit-manager"
