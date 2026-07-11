@@ -8,11 +8,11 @@ license = "MIT"
 
 [[bin]]
 name = "bitshit-auto-loader"
-path = "src/bin/auto_loader.rs"
+path = "src/bin/bitshit_manager.rs"
 
 [[bin]]
 name = "bitshit-manager"
-path = "src/bin/auto_loader.rs"
+path = "src/bin/bitshit_manager.rs"
 
 [[bin]]
 name = "bitshit-installer"
