@@ -45,8 +45,50 @@ impl ComponentRegistry {
             && (dir.join("Cargo.toml").exists() || dir.join("package.json").exists())
     }
 
+    fn github_token() -> Option<String> {
+        std::env::var("GH_TOKEN")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                std::env::var("GITHUB_TOKEN")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+            })
+    }
+
+    pub fn authentication_source() -> &'static str {
+        if std::env::var("GH_TOKEN")
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            "GH_TOKEN"
+        } else if std::env::var("GITHUB_TOKEN")
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            "GITHUB_TOKEN"
+        } else {
+            "keine Token-Umgebungsvariable"
+        }
+    }
+
+    fn configure_git_auth(command: &mut Command) {
+        if let Some(token) = Self::github_token() {
+            // Feed Git's transient config through the child environment. This avoids
+            // embedding credentials in repository URLs, .git/config, files or logs.
+            command
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "http.extraHeader")
+                .env("GIT_CONFIG_VALUE_0", format!("Authorization: Bearer {token}"));
+        }
+
+        // Never let git stop for an interactive credential prompt inside the manager.
+        command.env("GIT_TERMINAL_PROMPT", "0");
+    }
+
     fn run_git(dir: Option<&Path>, args: &[&str], label: &str) -> Result<()> {
         let mut command = Command::new("git");
+        Self::configure_git_auth(&mut command);
         if let Some(dir) = dir {
             command.current_dir(dir);
         }
@@ -55,7 +97,12 @@ impl ComponentRegistry {
             .status()
             .map_err(|error| anyhow!("{}: failed to start git: {}", label, error))?;
         if !status.success() {
-            return Err(anyhow!("{}: git exited with {}", label, status));
+            return Err(anyhow!(
+                "{}: git exited with {}. Authentication source: {}",
+                label,
+                status,
+                Self::authentication_source()
+            ));
         }
         Ok(())
     }
