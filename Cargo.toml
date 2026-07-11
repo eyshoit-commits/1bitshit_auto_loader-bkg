@@ -1,13 +1,17 @@
 [package]
 name = "bitshit-auto-loader"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["BitShit"]
-description = "GUI and headless installer for the modular BitShit stack."
+description = "GUI and CLI manager for the modular BitShit stack."
 license = "MIT"
 
 [[bin]]
 name = "bitshit-auto-loader"
+path = "src/bin/auto_loader.rs"
+
+[[bin]]
+name = "bitshit-manager"
 path = "src/bin/auto_loader.rs"
 
 [[bin]]
@@ -21,6 +25,7 @@ anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tokio = { version = "1.37", features = ["full"] }
+inquire = "0.7"
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 sysinfo = "0.33"
 bitshit-shared = { git = "https://github.com/eyshoit-commits/1bitshit_kernel-bkg", package = "bitshit-shared", branch = "main" }
